@@ -4,7 +4,7 @@
 
 set -eu
 
-REPO="Serveurperso/omnivoice.cpp-GGUF"
+REPO="Serveurperso/OmniVoice-GGUF"
 DIR="models"
 mkdir -p "$DIR"
 
