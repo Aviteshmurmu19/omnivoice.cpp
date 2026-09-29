@@ -151,8 +151,15 @@ jobs:
       # An NVIDIA driver provides nvcuda.dll but NOT cublas or cudart: those ship
       # only with the toolkit, and ggml cannot statically link cuBLAS on Windows
       # (no static cuBLAS library exists there after toolkit 12.3.1). Without
-      # these the binary cannot start on a machine with no CUDA install, which
-      # would defeat the point of building it in CI.
+      # these the executables die at load time with 0xC0000135
+      # STATUS_DLL_NOT_FOUND, which users see as "exit code -1073741515".
+      #
+      # A missing DLL fails the build rather than warning. A silently broken CUDA
+      # zip that looks fine until a user runs it is worse than a red build.
+      #
+      # The globs are version-agnostic and also probe bin\x64, so a future CUDA
+      # bump (cublas64_12 -> cublas64_13, and CUDA 13 relocating DLLs into
+      # bin\x64) cannot silently reintroduce the same breakage.
       - name: Package (Windows)
         if: matrix.os == 'windows'
         shell: pwsh
@@ -161,14 +168,19 @@ jobs:
           Copy-Item "build-msvc\Release\*.exe" dist\ -ErrorAction SilentlyContinue
           Copy-Item "build-msvc\Release\*.dll" dist\ -ErrorAction SilentlyContinue
 
-          foreach ($dll in @('cudart64_12.dll','cublas64_12.dll','cublasLt64_12.dll')) {
-            $src = Get-ChildItem -Path "$env:CUDA_PATH\bin" -Filter $dll -ErrorAction SilentlyContinue |
-                   Select-Object -First 1
-            if ($src) {
-              Copy-Item $src.FullName dist\
+          $missing = @()
+          foreach ($lib in @('cudart64_*', 'cublas64_*', 'cublasLt64_*')) {
+            $found = Get-ChildItem -Path "$env:CUDA_PATH\bin\$lib.dll", "$env:CUDA_PATH\bin\x64\$lib.dll" `
+                     -ErrorAction SilentlyContinue
+            if ($found) {
+              Copy-Item $found.FullName dist\
+              Write-Output "bundled $($found.Name -join ', ')"
             } else {
-              Write-Output "WARN: $dll not found under $env:CUDA_PATH\bin"
+              $missing += $lib
             }
+          }
+          if ($missing.Count -gt 0) {
+            throw "CUDA runtime DLLs not found under $env:CUDA_PATH (missing: $($missing -join ', ')). Refusing to publish a CUDA zip that cannot load."
           }
 
           # MSVC runtime, so the build also runs on a clean Windows install
@@ -183,8 +195,20 @@ jobs:
             Write-Output "WARN: MSVC CRT redist not found; the artifact may need the VC++ runtime installed"
           }
 
+          # The archive name is derived from matrix.os so it cannot drift out of
+          # step with the upload pattern below. A hardcoded "win" here once
+          # produced omnivoice-win-cuda-sm75.zip while the upload looked for
+          # omnivoice-windows-cuda-sm75.*, and the whole Windows job was lost
+          # after a 29-minute build.
           Compress-Archive -Path dist\* `
-            -DestinationPath "omnivoice-win-cuda-sm${{ matrix.sm }}.zip" -Force
+            -DestinationPath "omnivoice-${{ matrix.os }}-cuda-sm${{ matrix.sm }}.zip" -Force
+
+          # Echo the staged files so the manifest is verifiable from the log even
+          # if a later step fails.
+          Write-Output "--- dist contents ---"
+          Get-ChildItem dist | ForEach-Object {
+            "{0,-28} {1,10:N1} MB" -f $_.Name, ($_.Length / 1MB)
+          }
 
       # Colab and Kaggle images already provide the CUDA runtime, so bundling
       # several hundred MB of it here would be pure waste.
@@ -195,7 +219,9 @@ jobs:
           mkdir -p dist
           cp build/omnivoice-tts build/omnivoice-codec build/tts-server build/quantize dist/
           cp build/*.so dist/ 2>/dev/null || true
-          tar -C dist -czf "omnivoice-linux-cuda-sm${{ matrix.sm }}.tar.gz" .
+          tar -C dist -czf "omnivoice-${{ matrix.os }}-cuda-sm${{ matrix.sm }}.tar.gz" .
+          echo "--- dist contents ---"
+          ls -la dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
