@@ -1,0 +1,189 @@
+# Builds omnivoice.cpp for NVIDIA CUDA on Windows and Linux.
+#
+# One artifact per OS per architecture, so each is small and you download only
+# what you need. To add a GPU later, append to the `sm` matrix below; nothing
+# else changes. Architectures map as: 75 = GTX 1650 / T4 (Turing),
+# 80 = A100 (Ampere), 89 = L4 (Ada), 120a = Blackwell (needs CUDA >= 12.8).
+#
+# Design rationale, including why each non-obvious flag is set:
+# docs/superpowers/specs/2026-09-29-omnivoice-cuda-build-design.md
+
+name: Build (CUDA)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cuda-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.os }} (sm${{ matrix.sm }}, cuda${{ matrix.cuda }})
+
+    runs-on: ${{ matrix.os == 'windows' && 'windows-latest' || 'ubuntu-24.04' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows, linux]
+        sm: ['75']
+        # 12.x rather than 13.x: CUDA 13 removed offline compilation for
+        # Maxwell/Pascal/Volta, and Kaggle and Colab both gate Tesla P100
+        # (sm_60) instances on some tiers. 12.8 is also the first toolkit that
+        # can emit sm_120, so adding Blackwell later needs no toolkit change.
+        cuda: ['12.8.1']
+
+    steps:
+      # submodules: recursive is mandatory. Without it ggml/ is empty and
+      # add_subdirectory(${GGML_SOURCE_DIR} ggml) in CMakeLists.txt fails
+      # immediately. A plain `git clone` does not cover this either.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      # Both operating systems install CUDA the same way. A container image
+      # would be faster on Linux, but selecting one per-OS means a conditional
+      # `container:` expression, and Windows runners reject containers
+      # outright, so a mistake there fails both jobs before anything runs.
+      # One shared mechanism is worth a couple of minutes of install time.
+      #
+      # method: network is required on Linux and works on Windows. It also
+      # avoids the full 12.x Windows installer, which bundles a display driver
+      # we do not want installed on a GPU-less runner. The action caches the
+      # downloaded installer itself.
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: ${{ matrix.cuda }}
+          method: network
+          log-file-suffix: '${{ matrix.os }}.txt'
+
+      - name: Install build tools (Linux)
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq cmake ninja-build build-essential git
+
+      # CMAKE_CUDA_ARCHITECTURES is pinned deliberately and must not be dropped.
+      # The ggml default list starts 50-virtual 61-virtual 70-virtual, which a
+      # 13.x toolkit cannot compile at all. Pinning also keeps the default list
+      # from ever being evaluated, and '75-real' emits native SASS for the
+      # target instead of paying a PTX JIT on every process start.
+      # GGML_BACKEND_DL=ON makes the CUDA backend a separate ggml-cuda.dll
+      # loaded at runtime by ggml_backend_load_all(), so it must ship next to
+      # the executables.
+      - name: Configure (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          cmake -S . -B build-msvc `
+            -DGGML_CUDA=ON `
+            -DGGML_BACKEND_DL=ON `
+            -DGGML_NATIVE=OFF `
+            -DGGML_CUDA_CUB_3DOT2=ON `
+            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.sm }}-real `
+            --log-level=ERROR
+
+      - name: Configure (Linux)
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_CUDA=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CUDA_CUB_3DOT2=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.sm }}-real
+
+      # /v:minimal and ErrorsOnly keep the MSBuild log readable; without them a
+      # CUDA build emits tens of thousands of per-file progress lines.
+      - name: Build (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          cmake --build build-msvc --config Release -j $env:NUMBER_OF_PROCESSORS `
+            -- /v:minimal /consoleloggerparameters:ErrorsOnly
+
+      - name: Build (Linux)
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          cmake --build build -j "$(nproc)"
+
+      # No GPU on the runners, so this only proves the binaries start. Real
+      # synthesis has to be checked on a machine with a GPU.
+      - name: Smoke test
+        continue-on-error: true
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "windows" ]; then B=build-msvc/Release; else B=build; fi
+          for tool in omnivoice-tts omnivoice-codec tts-server quantize; do
+            echo "--- $tool ---"
+            "$B/$tool" --help 2>&1 | head -3 || echo "  (no output)"
+          done
+
+      # An NVIDIA driver provides nvcuda.dll but NOT cublas or cudart: those ship
+      # only with the toolkit, and ggml cannot statically link cuBLAS on Windows
+      # (no static cuBLAS library exists there after toolkit 12.3.1). Without
+      # these the binary cannot start on a machine with no CUDA install, which
+      # would defeat the point of building it in CI.
+      - name: Package (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist | Out-Null
+          Copy-Item "build-msvc\Release\*.exe" dist\ -ErrorAction SilentlyContinue
+          Copy-Item "build-msvc\Release\*.dll" dist\ -ErrorAction SilentlyContinue
+
+          foreach ($dll in @('cudart64_12.dll','cublas64_12.dll','cublasLt64_12.dll')) {
+            $src = Get-ChildItem -Path "$env:CUDA_PATH\bin" -Filter $dll -ErrorAction SilentlyContinue |
+                   Select-Object -First 1
+            if ($src) {
+              Copy-Item $src.FullName dist\
+            } else {
+              Write-Output "WARN: $dll not found under $env:CUDA_PATH\bin"
+            }
+          }
+
+          # MSVC runtime, so the build also runs on a clean Windows install
+          # rather than relying on a redist some earlier app happened to leave.
+          # Roughly 0.8 MB. Warn rather than fail if the layout ever changes.
+          $crt = Get-ChildItem -Path "$env:ProgramFiles\Microsoft Visual Studio\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" `
+                 -Directory -ErrorAction SilentlyContinue |
+                 Sort-Object FullName -Descending | Select-Object -First 1
+          if ($crt) {
+            Copy-Item (Join-Path $crt.FullName '*.dll') dist\
+          } else {
+            Write-Output "WARN: MSVC CRT redist not found; the artifact may need the VC++ runtime installed"
+          }
+
+          Compress-Archive -Path dist\* `
+            -DestinationPath "omnivoice-win-cuda-sm${{ matrix.sm }}.zip" -Force
+
+      # Colab and Kaggle images already provide the CUDA runtime, so bundling
+      # several hundred MB of it here would be pure waste.
+      - name: Package (Linux)
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp build/omnivoice-tts build/omnivoice-codec build/tts-server build/quantize dist/
+          cp build/*.so dist/ 2>/dev/null || true
+          tar -C dist -czf "omnivoice-linux-cuda-sm${{ matrix.sm }}.tar.gz" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: omnivoice-${{ matrix.os }}-cuda-sm${{ matrix.sm }}
+          path: omnivoice-${{ matrix.os }}-cuda-sm${{ matrix.sm }}.*
+          if-no-files-found: error
+          # Already-compressed payload; compressing again wastes minutes.
+          compression-level: 0
+          retention-days: 14
