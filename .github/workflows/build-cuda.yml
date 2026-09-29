@@ -89,6 +89,14 @@ jobs:
       # loaded at runtime by ggml_backend_load_all(), so it must ship next to
       # the executables.
       #
+      # GGML_CUDA_FORCE_MMQ=ON picks the integer dot-product kernels over the
+      # tensor-core ones. Both target GPUs are Turing and have no tensor cores:
+      # the GTX 1650 and the Tesla T4 on Colab and Kaggle alike. Without this
+      # flag ggml detects the missing tensor cores at startup, prints
+      # "suboptimal performance", and silently takes the slower path anyway -
+      # so the flag makes the choice explicit rather than changing behaviour.
+      # Measured RTF 4.4 on the GTX 1650 before adding it.
+      #
       # The generator is pinned to Visual Studio 2022 and must not be dropped.
       # Current runner images also carry Visual Studio 2026, and CMake picks the
       # newest it finds, so leaving the generator implicit selects "Visual Studio
@@ -103,6 +111,7 @@ jobs:
             -G "Visual Studio 17 2022" `
             -A x64 `
             -DGGML_CUDA=ON `
+            -DGGML_CUDA_FORCE_MMQ=ON `
             -DGGML_BACKEND_DL=ON `
             -DGGML_NATIVE=OFF `
             -DGGML_CUDA_CUB_3DOT2=ON `
@@ -116,6 +125,7 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_CUDA=ON \
+            -DGGML_CUDA_FORCE_MMQ=ON \
             -DGGML_BACKEND_DL=ON \
             -DGGML_NATIVE=OFF \
             -DGGML_CUDA_CUB_3DOT2=ON \
