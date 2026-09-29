@@ -184,15 +184,21 @@ jobs:
           }
 
           # MSVC runtime, so the build also runs on a clean Windows install
-          # rather than relying on a redist some earlier app happened to leave.
-          # Roughly 0.8 MB. Warn rather than fail if the layout ever changes.
-          $crt = Get-ChildItem -Path "$env:ProgramFiles\Microsoft Visual Studio\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" `
-                 -Directory -ErrorAction SilentlyContinue |
-                 Sort-Object FullName -Descending | Select-Object -First 1
+          # rather than depending on a redist some earlier app happened to leave.
+          # Roughly 0.8 MB.
+          #
+          # The layout is ...\Microsoft Visual Studio\<year>\<edition>\VC\Redist\
+          # MSVC\<ver>\x64\Microsoft.VC<nnn>.CRT\, so the glob needs TWO path
+          # segments between "Visual Studio" and "\VC\" - one '*' silently
+          # matched nothing on the first run and the artifact shipped without
+          # these DLLs. Glob the DLLs directly and throw if none are found.
+          $crt = Get-ChildItem -Path "$env:ProgramFiles\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT\*.dll" `
+                 -File -ErrorAction SilentlyContinue
           if ($crt) {
-            Copy-Item (Join-Path $crt.FullName '*.dll') dist\
+            Copy-Item $crt.FullName dist\
+            Write-Output "bundled MSVC runtime: $($crt.Name -join ', ')"
           } else {
-            Write-Output "WARN: MSVC CRT redist not found; the artifact may need the VC++ runtime installed"
+            throw "MSVC runtime DLLs not found under $env:ProgramFiles\Microsoft Visual Studio. Refusing to publish an artifact that may need the VC++ redistributable installed."
           }
 
           # The archive name is derived from matrix.os so it cannot drift out of
