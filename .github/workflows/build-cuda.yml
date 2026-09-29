@@ -130,21 +130,28 @@ jobs:
           # Ada and Blackwell all have tensor cores, where forcing MMQ would
           # replace cuBLAS tensor-core GEMMs with slower integer dot products.
           #
-          # Built as an array and splatted with @mmq, not a bare $mmq. An empty
-          # PowerShell string still passes an empty argument to a native command
-          # and CMake rejects it with 'Unknown argument ""'. An empty array
-          # splats to nothing.
-          $mmq = if ('${{ matrix.sm.cuda }}' -eq '75') { @('-DGGML_CUDA_FORCE_MMQ=ON') } else { @() }
-          cmake -S . -B build-msvc `
-            -G "Visual Studio 17 2022" `
-            -A x64 `
-            -DGGML_CUDA=ON `
-            -DGGML_BACKEND_DL=ON `
-            -DGGML_NATIVE=OFF `
-            -DGGML_CUDA_CUB_3DOT2=ON `
-            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.sm.cuda }}-real `
-            @mmq `
-            --log-level=ERROR
+          # The arguments are collected into ONE array and splatted once.
+          # Two traps, both hit here:
+          #   - An empty PowerShell string still passes an empty argument to a
+          #     native command, and CMake rejects it.
+          #   - `$x = if (...) { @('a') } else { @() }` assigns a STRING, not an
+          #     array, because the if-expression enumerates its output. Splatting
+          #     that with @x passed a bare '-' and CMake said "Unknown
+          #     argument -". Assigning to a pre-declared array and using += keeps
+          #     it an array in both branches.
+          $cargs = @(
+            '-S', '.', '-B', 'build-msvc',
+            '-G', 'Visual Studio 17 2022',
+            '-A', 'x64',
+            '-DGGML_CUDA=ON',
+            '-DGGML_BACKEND_DL=ON',
+            '-DGGML_NATIVE=OFF',
+            '-DGGML_CUDA_CUB_3DOT2=ON',
+            "-DCMAKE_CUDA_ARCHITECTURES=${{ matrix.sm.cuda }}-real"
+          )
+          if ('${{ matrix.sm.cuda }}' -eq '75') { $cargs += '-DGGML_CUDA_FORCE_MMQ=ON' }
+          $cargs += '--log-level=ERROR'
+          cmake @cargs
 
       - name: Configure (Linux)
         if: matrix.os == 'linux'
