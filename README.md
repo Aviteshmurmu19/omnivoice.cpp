@@ -37,13 +37,10 @@ binary without installing a compiler, CUDA or MSVC.
 
 ## Prebuilt binaries
 
-CUDA builds for `sm_75` are published on the
-[releases page](https://github.com/Aviteshmurmu19/omnivoice.cpp/releases):
-
-| Asset | Size | Runs on |
-|---|---|---|
-| `omnivoice-windows-cuda-sm75.zip` | 564 MB | Windows x64 — GTX 1650, no CUDA toolkit needed |
-| `omnivoice-linux-cuda-sm75.tar.gz` | 21 MB | Linux x64 — Colab and Kaggle T4 |
+CUDA builds are published on the
+[releases page](https://github.com/Aviteshmurmu19/omnivoice.cpp/releases), one per
+OS and architecture — see [GPU support](#gpu-support) for the full list. The
+Windows archives are around 564 MB each, the Linux ones about 21 MB.
 
 **The Windows archive is self-contained.** It ships `cudart64_12.dll`,
 `cublas64_12.dll`, `cublasLt64_12.dll` and the MSVC runtime alongside the
@@ -191,28 +188,38 @@ Or use the scripts the project already ships: `buildcuda.sh`, `buildvulkan.sh`,
 
 ## GPU support
 
-The CI builds one artifact per OS and architecture. Adding a GPU is a one-line
-change to the `sm` matrix in [`.github/workflows/build-cuda.yml`](.github/workflows/build-cuda.yml):
+CI builds one artifact per OS **and** per architecture — never a fat multi-arch
+binary. Each is native SASS for its target, and you download only what you need.
 
-| `sm` | Architecture | Hardware |
-|---|---|---|
-| `75` | Turing | GTX 1650, Tesla T4 |
-| `80` | Ampere | A100 |
-| `89` | Ada Lovelace | L4 |
-| `120a` | Blackwell | RTX PRO 6000 (Colab G4) |
+| `sm` | Architecture | Hardware | Windows | Linux |
+|---|---|---|---|---|
+| `75` | Turing | GTX 1650, Tesla T4 | `omnivoice-windows-cuda-sm75.zip` | `omnivoice-linux-cuda-sm75.tar.gz` |
+| `80` | Ampere | A100 | `omnivoice-windows-cuda-sm80.zip` | `omnivoice-linux-cuda-sm80.tar.gz` |
+| `89` | Ada Lovelace | L4 | `omnivoice-windows-cuda-sm89.zip` | `omnivoice-linux-cuda-sm89.tar.gz` |
+| `120a` | Blackwell | RTX PRO 6000 (Colab G4) | `omnivoice-windows-cuda-sm120a.zip` | `omnivoice-linux-cuda-sm120a.tar.gz` |
+
+Adding one is a single line in [`.github/workflows/build-cuda.yml`](.github/workflows/build-cuda.yml):
 
 ```yaml
-matrix:
-  os: [windows, linux]
-  sm: ['75', '80']    # add architectures here
+sm:
+  - { cuda: '75',   name: '75' }
+  - { cuda: '80',   name: '80' }
+  - { cuda: '89',   name: '89' }
+  - { cuda: '120a', name: '120a' }
 ```
 
-The toolkit is pinned to CUDA 12.8, the first release able to emit `sm_120`, so
-Blackwell needs no toolkit change.
+`cuda` becomes the CMake architecture; `name` becomes the artifact name. The two
+are separate because Blackwell needs the `a` suffix — `120a`, never `120`.
 
 > [!TIP]
-> `GGML_CUDA_FORCE_MMQ=ON` is enabled because Turing has no tensor cores, which
-> covers both the GTX 1650 and the T4. Leave it off for Ampere and newer.
+> The toolkit is pinned to CUDA 12.8, the first release able to emit `sm_120`, so
+> Blackwell needs no toolkit change. It is also the last 12.x line, which is what
+> keeps `sm_60` (Tesla P100) buildable.
+
+> [!NOTE]
+> `GGML_CUDA_FORCE_MMQ` is applied only to `sm_75`. It exists for GPUs with no
+> tensor cores; forcing it on Ampere or newer would replace cuBLAS tensor-core
+> GEMMs with slower integer dot products.
 
 ## Embedding the library
 

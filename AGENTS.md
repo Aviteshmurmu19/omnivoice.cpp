@@ -89,12 +89,16 @@ checkout, so `gh` has no git context to infer the repository from.
 `gh release edit --notes-file`. A PowerShell here-string eats the backticks and
 leaves `\foo\`.
 
-**`GGML_CUDA_FORCE_MMQ=ON` is correct for Turing.** The GTX 1650 and the T4 have
-no tensor cores. ggml detects this and silently takes the MMQ path anyway, so the
-flag makes an existing behaviour explicit; leave it off for Ampere and newer.
+**`GGML_CUDA_FORCE_MMQ` is applied to `sm_75` only.** The GTX 1650 and the T4 are
+Turing and have no tensor cores, so ggml falls back on its own and the flag just
+makes that explicit. On Ampere, Ada and Blackwell it would replace cuBLAS
+tensor-core GEMMs with slower integer dot products, so the workflow sets it
+conditionally rather than globally. If you add an architecture, check whether it
+has tensor cores before assuming the flag applies.
 
-Budget the time: Windows ~30 min, Linux ~15 min. The Windows artifact is 564 MB,
-almost entirely `cublasLt64_12.dll` (643 MB uncompressed).
+Budget the time: Windows ~30 min, Linux ~15 min, and the four architectures run
+as parallel jobs. The Windows artifact is 564 MB, almost entirely
+`cublasLt64_12.dll` (643 MB uncompressed).
 
 ## Do not copy upstream's CI
 
@@ -121,6 +125,18 @@ the released build, which predates `GGML_CUDA_FORCE_MMQ=ON` — re-measure befor
 quoting it against a newer build.
 
 No TPU support — ggml has no TPU or XLA backend.
+
+## GPU architectures
+
+`build-cuda.yml` builds `{windows, linux} x {sm_75, sm_80, sm_89, sm_120a}` — eight
+jobs, one artifact each, `fail-fast: false` so one bad architecture cannot block
+the rest. Entries are `{cuda, name}` objects, not bare numbers: Blackwell needs
+the `a` suffix, so `cuda: '120a'` yields `120a-real` and a bare `'120'` would not.
+`name` is what appears in the artifact filename.
+
+`sm_60` is deliberately absent. It is buildable on CUDA 12.x and is the reason the
+toolkit is not on 13.x, but no current runner GPU here is Pascal. Add it as
+`{ cuda: '60', name: '60' }` if a Tesla P100 becomes a target.
 
 ## Verification
 

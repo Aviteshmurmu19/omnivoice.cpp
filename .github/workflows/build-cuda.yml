@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.os }} (sm${{ matrix.sm }}, cuda${{ matrix.cuda }})
+    name: ${{ matrix.os }} (sm${{ matrix.sm.name }}, cuda${{ matrix.cuda }})
 
     # windows-2022, not windows-latest. Current windows-latest images also ship
     # Visual Studio 2026, and CMake selects the newest generator it finds, so an
@@ -38,7 +38,27 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows, linux]
-        sm: ['75']
+        # One artifact per architecture, never a fat multi-arch binary: smaller
+        # downloads, and each is native SASS for its target.
+        #
+        # `cuda` is the architecture as CMake wants it and `name` is what appears
+        # in the artifact filename, because Blackwell needs the 'a' suffix -
+        # 120a, not 120. ggml's own default list uses 120a-real for the same
+        # reason, and CUDA 12.8 is the first toolkit that can emit it.
+        #
+        #   75   Turing       GTX 1650, Tesla T4 (Colab + Kaggle)
+        #   80   Ampere       A100
+        #   89   Ada Lovelace L4
+        #   120a Blackwell    RTX PRO 6000 (Colab G4)
+        #
+        # fail-fast: false is load-bearing here: if one architecture turns out
+        # to be wrong for a given toolkit, only that job fails and the other
+        # three still produce artifacts.
+        sm:
+          - { cuda: '75',   name: '75' }
+          - { cuda: '80',   name: '80' }
+          - { cuda: '89',   name: '89' }
+          - { cuda: '120a', name: '120a' }
         # 12.x rather than 13.x: CUDA 13 removed offline compilation for
         # Maxwell/Pascal/Volta, and Kaggle and Colab both gate Tesla P100
         # (sm_60) instances on some tiers. 12.8 is also the first toolkit that
@@ -89,13 +109,11 @@ jobs:
       # loaded at runtime by ggml_backend_load_all(), so it must ship next to
       # the executables.
       #
-      # GGML_CUDA_FORCE_MMQ=ON picks the integer dot-product kernels over the
-      # tensor-core ones. Both target GPUs are Turing and have no tensor cores:
-      # the GTX 1650 and the Tesla T4 on Colab and Kaggle alike. Without this
-      # flag ggml detects the missing tensor cores at startup, prints
-      # "suboptimal performance", and silently takes the slower path anyway -
-      # so the flag makes the choice explicit rather than changing behaviour.
-      # Measured RTF 4.4 on the GTX 1650 before adding it.
+      # GGML_CUDA_FORCE_MMQ is applied only to sm_75. ggml detects missing tensor
+      # cores at startup and falls back on its own, so on Turing the flag just
+      # makes that explicit; on Ampere and newer it would actively hurt, since
+      # MMQ replaces cuBLAS tensor-core GEMMs with integer dot products. It is
+      # therefore set conditionally in the Configure steps, not globally.
       #
       # The generator is pinned to Visual Studio 2022 and must not be dropped.
       # Current runner images also carry Visual Studio 2026, and CMake picks the
@@ -107,29 +125,43 @@ jobs:
         if: matrix.os == 'windows'
         shell: pwsh
         run: |
+          # MMQ is for GPUs with no tensor cores. Turing (sm_75) is the only
+          # architecture here that qualifies - the GTX 1650 and the T4. Ampere,
+          # Ada and Blackwell all have tensor cores, where forcing MMQ would
+          # replace cuBLAS tensor-core GEMMs with slower integer dot products.
+          #
+          # Built as an array and splatted with @mmq, not a bare $mmq. An empty
+          # PowerShell string still passes an empty argument to a native command
+          # and CMake rejects it with 'Unknown argument ""'. An empty array
+          # splats to nothing.
+          $mmq = if ('${{ matrix.sm.cuda }}' -eq '75') { @('-DGGML_CUDA_FORCE_MMQ=ON') } else { @() }
           cmake -S . -B build-msvc `
             -G "Visual Studio 17 2022" `
             -A x64 `
             -DGGML_CUDA=ON `
-            -DGGML_CUDA_FORCE_MMQ=ON `
             -DGGML_BACKEND_DL=ON `
             -DGGML_NATIVE=OFF `
             -DGGML_CUDA_CUB_3DOT2=ON `
-            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.sm }}-real `
+            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.sm.cuda }}-real `
+            @mmq `
             --log-level=ERROR
 
       - name: Configure (Linux)
         if: matrix.os == 'linux'
         shell: bash
         run: |
+          # Same reasoning as the Windows step: MMQ only where there are no
+          # tensor cores.
+          mmq=""
+          [ "${{ matrix.sm.cuda }}" = "75" ] && mmq="-DGGML_CUDA_FORCE_MMQ=ON"
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_CUDA=ON \
-            -DGGML_CUDA_FORCE_MMQ=ON \
             -DGGML_BACKEND_DL=ON \
             -DGGML_NATIVE=OFF \
             -DGGML_CUDA_CUB_3DOT2=ON \
-            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.sm }}-real
+            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.sm.cuda }}-real \
+            $mmq
 
       # /v:minimal and ErrorsOnly keep the MSBuild log readable; without them a
       # CUDA build emits tens of thousands of per-file progress lines.
@@ -217,7 +249,7 @@ jobs:
           # omnivoice-windows-cuda-sm75.*, and the whole Windows job was lost
           # after a 29-minute build.
           Compress-Archive -Path dist\* `
-            -DestinationPath "omnivoice-${{ matrix.os }}-cuda-sm${{ matrix.sm }}.zip" -Force
+            -DestinationPath "omnivoice-${{ matrix.os }}-cuda-sm${{ matrix.sm.name }}.zip" -Force
 
           # Echo the staged files so the manifest is verifiable from the log even
           # if a later step fails.
@@ -235,15 +267,15 @@ jobs:
           mkdir -p dist
           cp build/omnivoice-tts build/omnivoice-codec build/tts-server build/quantize dist/
           cp build/*.so dist/ 2>/dev/null || true
-          tar -C dist -czf "omnivoice-${{ matrix.os }}-cuda-sm${{ matrix.sm }}.tar.gz" .
+          tar -C dist -czf "omnivoice-${{ matrix.os }}-cuda-sm${{ matrix.sm.name }}.tar.gz" .
           echo "--- dist contents ---"
           ls -la dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: omnivoice-${{ matrix.os }}-cuda-sm${{ matrix.sm }}
-          path: omnivoice-${{ matrix.os }}-cuda-sm${{ matrix.sm }}.*
+          name: omnivoice-${{ matrix.os }}-cuda-sm${{ matrix.sm.name }}
+          path: omnivoice-${{ matrix.os }}-cuda-sm${{ matrix.sm.name }}.*
           if-no-files-found: error
           # Already-compressed payload; compressing again wastes minutes.
           compression-level: 0

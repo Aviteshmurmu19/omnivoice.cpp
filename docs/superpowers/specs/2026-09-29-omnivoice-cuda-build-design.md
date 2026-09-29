@@ -316,6 +316,51 @@ missing-DLL symptom (`0xC0000135 STATUS_DLL_NOT_FOUND`, surfaced to users as
 "exit code -1073741515") only appears at load time on a machine without a CUDA
 toolkit, which is every end user.
 
+## Architecture coverage
+
+The matrix is `{windows, linux} × {sm_75, sm_80, sm_89, sm_120a}` — eight jobs,
+each producing one artifact. One artifact per architecture rather than a fat
+multi-arch binary: each is native SASS for its target, downloads are smaller, and
+the jobs run in parallel instead of one long serial compile.
+
+| `sm` | Architecture | Hardware |
+|---|---|---|
+| `75` | Turing | GTX 1650, Tesla T4 (Colab, Kaggle) |
+| `80` | Ampere | A100 |
+| `89` | Ada Lovelace | L4 |
+| `120a` | Blackwell | RTX PRO 6000 (Colab G4) |
+
+Entries are `{cuda, name}` objects rather than bare numbers. NVIDIA's CUDA 12.8
+release notes list the new Blackwell compiler targets as "SM_100, SM_101, SM_120",
+and ggml's own default architecture list ends in `120a-real` and `121a-real`, so
+the `a` (architecture-specific) suffix is what both the toolkit and this codebase
+expect. A bare `120` would produce `120-real` instead, which is not the value
+ggml expects for Blackwell.
+
+`fail-fast: false` is load-bearing: if one architecture turns out to be wrong for
+the pinned toolkit, only that job fails and the other three still produce
+artifacts.
+
+`sm_60` is deliberately not built. It remains buildable on CUDA 12.x — which is
+precisely why the toolkit is not on 13.x — but none of the target machines is
+Pascal. It is one matrix entry away if a Tesla P100 ever becomes a target.
+
+### MMQ is architecture-conditional
+
+`GGML_CUDA_FORCE_MMQ` selects ggml's integer dot-product kernels over the
+cuBLAS tensor-core path. It applies to `sm_75` only: the GTX 1650 and the Tesla
+T4 are Turing and have no tensor cores, where ggml otherwise detects this at
+startup, prints "suboptimal performance", and falls back by itself. Ampere, Ada
+and Blackwell all have tensor cores, and forcing MMQ there would replace
+cuBLAS tensor-core GEMMs with slower integer dot products. The Configure steps
+therefore build the flag conditionally.
+
+The Windows step builds it as a PowerShell **array** and splats with `@mmq`. A
+bare `$mmq` holding an empty string still passes an empty argument to a native
+command, and CMake rejects it with `Unknown argument ""`. The bash step relies on
+the opposite behaviour — an unquoted empty variable expands to no words at all —
+so the two steps deliberately differ in form.
+
 ## Verification
 
 CI has no GPU, so it can only prove the binary compiles and starts. Validation is

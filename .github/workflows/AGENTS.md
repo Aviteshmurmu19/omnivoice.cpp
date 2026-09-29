@@ -9,10 +9,14 @@ documentation that must move with them.
 
 | File | Trigger | Does |
 |---|---|---|
-| `build-cuda.yml` | `workflow_dispatch` | Builds `{windows, linux} × {sm}`, uploads artifacts |
+| `build-cuda.yml` | `workflow_dispatch` | Builds `{windows, linux} × {sm_75, sm_80, sm_89, sm_120a}` — 8 jobs, one artifact each |
 | `publish-artifacts-to-release.yml` | `workflow_dispatch` | Moves a finished run's artifacts onto a release, server-side |
 
 Neither triggers on push. A push is always safe.
+
+Architectures: `75` Turing (GTX 1650, T4), `80` Ampere (A100), `89` Ada (L4),
+`120a` Blackwell (RTX PRO 6000). Full table with artifact names is in the
+README's *GPU support* section.
 
 ## How this got built
 
@@ -62,13 +66,22 @@ Break any of these and a build fails after ~30 minutes:
 - **`runs-on` for Windows is `windows-2022`**, and the generator is pinned
   `-G "Visual Studio 17 2022" -A x64`. Both are load-bearing; the generator pin
   is what survives a future image change.
-- **`CMAKE_CUDA_ARCHITECTURES` is always pinned.** ggml's default list starts
-  `50-virtual 61-virtual 70-virtual`, uncompilable by CUDA 13.
+- **`CMAKE_CUDA_ARCHITECTURES` is always pinned**, from `matrix.sm.cuda`.
+  ggml's default list starts `50-virtual 61-virtual 70-virtual`, uncompilable by
+  CUDA 13.
+- **`GGML_CUDA_FORCE_MMQ` is Turing-only, and is set conditionally.** It exists
+  for GPUs with no tensor cores, which here means `sm_75` alone. On Ampere, Ada
+  and Blackwell it would replace cuBLAS tensor-core GEMMs with slower integer dot
+  products. If you add an architecture, check whether it has tensor cores before
+  assuming the flag applies.
 - **The `cuda` matrix axis stays on 12.x.** CUDA 13 dropped Maxwell/Pascal/Volta
   offline compilation, so a 13.x build cannot run on a Tesla P100, which Kaggle
   and Colab both offer. 12.8 is also the first toolkit that emits `sm_120`.
-- **Artifact filenames derive from `matrix.os`** in both the package and upload
-  steps. Never hardcode `win` or `linux` in one of them.
+- **`sm` entries are `{cuda, name}` objects, not bare numbers.** Blackwell needs
+  the `a` suffix: `cuda: '120a'` produces `120a-real`, and `name` is what appears
+  in the artifact filename. A bare `'120'` would generate `120-real`.
+- **Artifact filenames derive from `matrix.os` and `matrix.sm.name`** in both the
+  package and upload steps. Never hardcode `win`, `linux` or a number.
 - **`if-no-files-found: error` stays.** It is what caught failure #3.
 - **A missing DLL throws; it never warns.** A green build that produced an
   artifact nobody can run is worse than a red one.
@@ -77,13 +90,18 @@ Break any of these and a build fails after ~30 minutes:
 
 > [!WARNING]
 > The `GGML_*` flags are **duplicated verbatim** in the Windows and Linux
-> `Configure` steps, and can silently drift apart. As of the last check the six
-> shared flags — `GGML_CUDA`, `GGML_CUDA_FORCE_MMQ`, `GGML_BACKEND_DL`,
-> `GGML_NATIVE`, `GGML_CUDA_CUB_3DOT2`, `CMAKE_CUDA_ARCHITECTURES` — all have
-> matching values, and `CMAKE_BUILD_TYPE=Release` is correctly Linux-only.
-> Verify that rather than assume it, and when you add or change a flag, change
-> both steps — or better, hoist the shared set into a job-level `env:` block and
-> reference it from both, which removes the duplication entirely.
+> `Configure` steps, and can silently drift apart. Five are literal in both —
+> `GGML_CUDA`, `GGML_BACKEND_DL`, `GGML_NATIVE`, `GGML_CUDA_CUB_3DOT2`,
+> `CMAKE_CUDA_ARCHITECTURES` — with `CMAKE_BUILD_TYPE=Release` correctly
+> Linux-only and `GGML_CUDA_FORCE_MMQ` handled separately as a conditional.
+> Verify that rather than assume it.
+
+> [!IMPORTANT]
+> The PowerShell `Configure (Windows)` step builds its conditional flag as an
+> **array** and splats it with `@mmq`. A bare `$mmq` that is an empty string
+> still passes an empty argument to a native command, and CMake rejects it with
+> `Unknown argument ""`. Bash is safe the other way — an unquoted empty variable
+> expands to nothing — so the two steps deliberately differ in form.
 
 ## Keep documentation in sync
 
@@ -104,8 +122,18 @@ four** in the same commit. The spec is the source of truth and should record
 cannot cite where a decision came from, either find the source or flag it as
 unverified in the spec rather than stating it as fact.
 
-Adding a GPU is a one-line change to the `sm` axis. If you do it, add the row to
-the README's *GPU support* table in the same commit.
+Adding a GPU is a one-line change to the `sm` axis — but it is an **object**, and
+Blackwell shows why:
+
+```yaml
+sm:
+  - { cuda: '120a', name: '120a' }   # 120a, not 120
+```
+
+`cuda` becomes `-DCMAKE_CUDA_ARCHITECTURES=<cuda>-real`; `name` becomes the
+artifact suffix. If you add an architecture, add its row to the README's *GPU
+support* table in the same commit, and check whether it has tensor cores before
+leaving MMQ alone.
 
 ## Verification
 
