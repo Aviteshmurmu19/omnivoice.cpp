@@ -282,6 +282,40 @@ consumed by package managers that supply their own runtime. A standalone CLI zip
 meant to be unzipped and run is a different distribution shape, which is why the
 CUDA DLLs are bundled here.
 
+### Failure log from real runs
+
+Three failures were hit and fixed. They are recorded because each was silent or
+misleading in a way that would otherwise recur.
+
+**1. Linux configure/install — missing `sudo`.** `apt-get` without a container
+runs as the non-root `runner` user:
+`E: Could not open lock file /var/lib/apt/lists/lock (13: Permission denied)`.
+
+**2. Windows configure — `No CUDA toolset found`.** Covered under
+"Runner images" above. Fixed by `windows-2022` plus an explicit generator.
+
+**3. Windows upload — the whole job lost after a 29-minute build.** The package
+step wrote `omnivoice-win-cuda-sm75.zip` while the upload step looked for
+`omnivoice-windows-cuda-sm75.*`, because `win` was hardcoded in one place and
+`matrix.os` expanded to `windows` in the other. Linux passed by luck, since its
+name happened to match. Both archive names now derive from `matrix.os` so the
+two cannot drift apart. The `if-no-files-found: error` guard is what caught it,
+and it is kept for exactly this reason.
+
+**4. Windows package — the MSVC runtime was silently missing.** The redist
+layout is
+`...\Microsoft Visual Studio\<year>\<edition>\VC\Redist\MSVC\<ver>\x64\Microsoft.VC<nnn>.CRT\`,
+so the glob needs two path segments between `Visual Studio` and `\VC\`. A single
+`*` matched nothing and only produced a warning line buried in the CUDA install
+log, so the run went green while shipping an incomplete artifact. Now the DLLs
+are globbed directly and a miss throws.
+
+Lesson applied throughout: a packaging problem must fail the build. A green run
+that produced an artifact nobody can run is worse than a red one, and the
+missing-DLL symptom (`0xC0000135 STATUS_DLL_NOT_FOUND`, surfaced to users as
+"exit code -1073741515") only appears at load time on a machine without a CUDA
+toolkit, which is every end user.
+
 ## Verification
 
 CI has no GPU, so it can only prove the binary compiles and starts. Validation is

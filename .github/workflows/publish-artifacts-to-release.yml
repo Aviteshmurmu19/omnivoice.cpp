@@ -1,0 +1,69 @@
+# Copies artifacts from a completed workflow run onto a GitHub release.
+#
+# Why this exists: the Windows artifact is ~563 MB, almost all of it
+# cublasLt64_12.dll. Pulling that down to rebuild it locally only to push it
+# straight back is slow and, over a flaky link, keeps failing part-way. Doing
+# the transfer on a runner keeps it server-side and takes a couple of minutes.
+#
+# Manual only. It does not build anything.
+
+name: Publish run artifacts to a release
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Workflow run id to take the artifacts from'
+        required: true
+        type: string
+      tag:
+        description: 'Release tag to attach them to'
+        required: true
+        type: string
+      pattern:
+        description: 'Only publish artifacts whose name contains this'
+        required: false
+        default: 'omnivoice-'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download artifacts from the source run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+          PATTERN: ${{ inputs.pattern }}
+        run: |
+          set -euo pipefail
+          mkdir -p pulled
+          # shellcheck disable=SC2046
+          names=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
+                    --jq ".artifacts[] | select(.name | contains(\"$PATTERN\")) | .name")
+          if [ -z "$names" ]; then
+            echo "No artifacts matching '$PATTERN' in run $RUN_ID" >&2
+            exit 1
+          fi
+          for n in $names; do
+            echo "::group::$n"
+            gh run download "$RUN_ID" -n "$n" -D pulled
+            echo "::endgroup::"
+          done
+          ls -la pulled
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          for f in pulled/*; do
+            echo "uploading $(basename "$f")"
+            gh release upload "$TAG" "$f" --clobber --repo "$GITHUB_REPOSITORY"
+          done
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[] | "\(.name)  \((.size/1048576*10|floor)/10) MB"'
