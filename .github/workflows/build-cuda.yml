@@ -67,8 +67,10 @@ jobs:
         if: matrix.os == 'linux'
         shell: bash
         run: |
-          apt-get update -qq
-          apt-get install -y -qq cmake ninja-build build-essential git
+          # sudo is required: without a container the job runs as the
+          # non-root 'runner' user, and apt cannot take its own lock.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build build-essential git
 
       # CMAKE_CUDA_ARCHITECTURES is pinned deliberately and must not be dropped.
       # The ggml default list starts 50-virtual 61-virtual 70-virtual, which a
@@ -78,11 +80,20 @@ jobs:
       # GGML_BACKEND_DL=ON makes the CUDA backend a separate ggml-cuda.dll
       # loaded at runtime by ggml_backend_load_all(), so it must ship next to
       # the executables.
+      #
+      # The generator is pinned to Visual Studio 2022 and must not be dropped.
+      # Current runner images also carry Visual Studio 2026, and CMake picks the
+      # newest it finds, so leaving the generator implicit selects "Visual Studio
+      # 18 2026" and configure then dies with "No CUDA toolset found" at
+      # enable_language(CUDA). CUDA 12.8 ships a toolset for the VS 2022 (v143)
+      # toolset only. llama.cpp pins windows-2022 for the same reason.
       - name: Configure (Windows)
         if: matrix.os == 'windows'
         shell: pwsh
         run: |
           cmake -S . -B build-msvc `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
             -DGGML_CUDA=ON `
             -DGGML_BACKEND_DL=ON `
             -DGGML_NATIVE=OFF `
