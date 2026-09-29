@@ -233,6 +233,55 @@ Upstream `master` was at `353b63b4` (v0.25.3) at the time of writing, slightly
 ahead of the pinned `40e16e4a`. Advancing the pin is the author's call, not this
 project's.
 
+## Runner images: why not `windows-latest`
+
+The first CI run failed on Windows with:
+
+```
+CMake Error at CMakeDetermineCompilerId.cmake:714 (message):
+  No CUDA toolset found.
+Call Stack:
+  CMakeDetermineCUDACompiler.cmake:163
+  ggml/src/ggml-cuda/CMakeLists.txt:59 (enable_language)
+-- Building for: Visual Studio 18 2026
+```
+
+Current `windows-latest` images also ship Visual Studio 2026. CMake selects the
+newest generator it discovers, so an implicit generator resolves to
+`Visual Studio 18 2026`, for which CUDA 12.8 ships no MSBuild toolset. The fix is
+`windows-2022` plus an explicit `Visual Studio 17 2022` generator, which together
+guarantee the v143 toolset regardless of what a future image adds.
+
+This is not a workaround invented here. Every project checked that publishes
+Windows CUDA binaries pins `windows-2022`:
+
+| Project | Runner | Generator | Bundles cuBLAS |
+|---|---|---|---|
+| `ggml-org/llama.cpp` | `windows-2022` | MSBuild, implicit | yes, 3 DLLs |
+| `LostRuins/koboldcpp` | `windows-2022` | MSBuild | yes, 2 DLLs |
+| `withcatai/node-llama-cpp` | `windows-2022` | — | — |
+| `handy-computer/transcribe.cpp` | controlled 16-vCPU image | Ninja + `ilammy/msvc-dev-cmd` | no, consumer supplies it |
+
+koboldcpp confirms the failure mode directly: it renames
+`C:\Program Files\Microsoft Visual Studio\2022\Enterprise` to
+`Enterprise_DISABLED` so CMake cannot select VS 2022 at all, then reinstalls an
+older Visual Studio. That is the same conflict resolved with a hammer rather than
+an image pin.
+
+`handy-computer/transcribe.cpp` takes the other proven route, Ninja plus a
+vcvars dev environment, on the reasoning that "nvcc needs cl.exe, and the Ninja
+generator needs the MSVC environment". MSBuild was kept here instead because both
+llama.cpp and koboldcpp build Windows CUDA with it, and the upstream author's own
+`buildall.cmd` assumes an MSVC generator. Its install also uses
+`Jimver/cuda-toolkit` with `method: network` and an explicit
+`sub-packages` list, confirming that approach.
+
+Two of the four bundle `cublas64_12.dll` and `cublasLt64_12.dll`; only
+transcribe.cpp omits them, and it does so because it ships library bindings
+consumed by package managers that supply their own runtime. A standalone CLI zip
+meant to be unzipped and run is a different distribution shape, which is why the
+CUDA DLLs are bundled here.
+
 ## Verification
 
 CI has no GPU, so it can only prove the binary compiles and starts. Validation is

@@ -24,7 +24,15 @@ jobs:
   build:
     name: ${{ matrix.os }} (sm${{ matrix.sm }}, cuda${{ matrix.cuda }})
 
-    runs-on: ${{ matrix.os == 'windows' && 'windows-latest' || 'ubuntu-24.04' }}
+    # windows-2022, not windows-latest. Current windows-latest images also ship
+    # Visual Studio 2026, and CMake selects the newest generator it finds, so an
+    # implicit generator picks "Visual Studio 18 2026" and configure then fails
+    # with "No CUDA toolset found" at enable_language(CUDA): CUDA 12.8 ships an
+    # MSBuild toolset for the VS 2022 v143 toolset only. Every project that
+    # publishes Windows CUDA binaries pins windows-2022 for this reason
+    # (llama.cpp, koboldcpp, node-llama-cpp); koboldcpp works around it by
+    # renaming the VS 2022 directory so CMake cannot select it at all.
+    runs-on: ${{ matrix.os == 'windows' && 'windows-2022' || 'ubuntu-24.04' }}
 
     strategy:
       fail-fast: false
