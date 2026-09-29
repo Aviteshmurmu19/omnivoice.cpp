@@ -135,6 +135,51 @@ artifact suffix. If you add an architecture, add its row to the README's *GPU
 support* table in the same commit, and check whether it has tensor cores before
 leaving MMQ alone.
 
+## Before you dispatch
+
+Eight jobs is a real cost. Confirm these first, locally, in seconds:
+
+```bash
+# 1. The submodule is live, or every job dies the same way
+git submodule status | grep '^-' && echo "STOP"
+
+# 2. The toolkit accepts each architecture you are about to ask for
+for a in 75-real 80-real 89-real 120a-real; do
+  cmake -S . -B /tmp/probe-$a -DCMAKE_CUDA_ARCHITECTURES=$a >/dev/null \
+    && echo "  $a ok" || echo "  $a FAILED"
+  rm -rf /tmp/probe-$a
+done
+```
+
+Also check, without dispatching:
+
+- The matrix expands to `{os} × {sm}` jobs and the count is what you expect
+- Windows and Linux `Configure` steps still carry identical `GGML_*` literals
+- Each package-step filename matches the upload glob
+- Artifact storage can absorb `os × sm` Windows artifacts, or you have a plan to
+  publish and delete
+
+> [!TIP]
+> Step 2 is the one that matters. It turns a 30-minute-per-architecture
+> discovery into a seconds-long one, and it is the only cheap way to find out
+> whether the pinned toolkit accepts an architecture before eight jobs agree to
+> find out slowly.
+
+## When a job fails
+
+Read the failed step's own log, not the job summary. The two most expensive
+mistakes here were both *late* failures — one at the upload step after 29 minutes
+of successful compiling, one a silent packaging gap that went green.
+
+- Identify **which step** failed. `Configure` failures are toolchain problems;
+  `Build` failures are usually code or architecture; `Package` and `Upload`
+  failures mean the compile was fine and the contract broke.
+- The Windows `Configure` step echoes its full command; the dist manifest is
+  echoed after packaging, so a successful build can be verified from the log
+  without downloading 564 MB.
+- One architecture failing while the others pass points at that architecture's
+  value, not at the toolkit or the runner.
+
 ## Verification
 
 CI runners have no GPU. Green means it compiled, packaged and started — not that

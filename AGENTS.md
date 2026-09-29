@@ -7,6 +7,77 @@ build traps below each cost a full 30-minute run to diagnose.
 Design rationale and sources: `docs/superpowers/specs/2026-09-29-omnivoice-cuda-build-design.md`.
 Docs belong in that directory, in this repo.
 
+## Before you build: pre-flight
+
+Cheap checks that each prevent a ~30-minute CI run. Run them locally first.
+
+```bash
+git submodule status | grep '^-' && echo "STOP: ggml not initialised"
+```
+
+| Check | Why it matters |
+|---|---|
+| `git submodule status` has no leading `-` | Empty `ggml` fails at `add_subdirectory()` |
+| `cmake -S . -B /tmp/probe -DCMAKE_CUDA_ARCHITECTURES=<arch>-real` | Proves the toolkit accepts that architecture, in seconds |
+| The YAML parses and the matrix expands to the job count you expect | A silently wrong matrix builds the wrong thing |
+| Windows and Linux `Configure` steps carry identical `GGML_*` literals | They are duplicated and drift |
+| Artifact filename in the package step matches the upload glob | A mismatch discards the whole build at the last step |
+
+> [!TIP]
+> The `cmake` probe is the highest-value one. A whole architecture can be
+> validated in seconds instead of discovering after 30 minutes that, say,
+> `120a-real` is not a value the pinned toolkit accepts.
+
+## Questions worth asking
+
+Ask these before changing a build, a pin, or an artifact contract. Most were
+learned the expensive way here.
+
+- **Which GPUs must this actually run on?** Not "all NVIDIA" — the honest list
+  drove every pin in this repo. A GPU you do not target can still break a build
+  if it is in the default architecture list.
+- **What driver will the target machine have?** This, not the GPU, is what
+  constrains the CUDA version. All three machines here clear 580; a machine on an
+  older driver would forbid CUDA 13 entirely.
+- **Does the target image/toolkit already provide the runtime?** Colab and Kaggle
+  do; a Windows desktop does not. That asymmetry is why Windows bundles cuBLAS
+  and Linux does not.
+- **Is "no fat binary" a size concern, a debugging concern, or a support one?**
+  Per-architecture artifacts cost N times the CI minutes and storage but make
+  each failure attributable to one architecture.
+- **Can this be verified without a GPU?** If not, say so in the PR rather than
+  letting a green run imply more than it proves.
+- **Does the change alter the public artifact contract?** Renaming a file is a
+  breaking change for anyone who scripted a download.
+
+## What agents typically miss
+
+Each of these has bitten here, or nearly.
+
+- **A green CI run proves nothing about synthesis.** Runners have no GPU. The
+  `--help` smoke test is `continue-on-error` and passes with missing DLLs.
+- **A warning is not a warning if it is the only symptom.** The MSVC CRT glob
+  matched nothing, printed one line buried in the CUDA install log, and shipped a
+  broken artifact green. Packaging problems must fail the build.
+- **Shell quoting differs between PowerShell and bash, in the direction that
+  hurts.** An empty PowerShell string still passes an empty argument to a native
+  command; CMake rejects it with `Unknown argument ""`. An unquoted empty bash
+  variable expands to nothing. Same intent, opposite mechanics.
+- **A duplicated literal in two steps will drift.** The `GGML_*` flags are
+  written out in both the Windows and Linux `Configure` steps. Check both, every
+  time, or hoist them into a job-level `env:` block.
+- **Backticks do not survive a PowerShell here-string.** `gh release edit` with an
+  inline `--notes` leaves `\foo\` where `` `foo` `` was meant. Use `--notes-file`.
+  `git commit -m` has the same problem; use `-F <file>`.
+- **The `ggml-org/ggml` name is a trap.** This project builds
+  `ServeurpersoCom/ggml`. Reading docs or examples against the wrong repository
+  leads to confidently wrong conclusions.
+- **`git push` on this repo is inert, and that is deliberate.** Both workflows are
+  `workflow_dispatch` only, so it is safe to accumulate commits. Do not "helpfully"
+  add a `push:` trigger.
+- **Storage is finite.** Four Windows artifacts at ~564 MB is 2.3 GB. Publish to a
+  release and delete the run artifacts rather than accumulating them.
+
 ## Setup
 
 The `ggml` submodule is mandatory. A plain `git clone` leaves it empty and the
