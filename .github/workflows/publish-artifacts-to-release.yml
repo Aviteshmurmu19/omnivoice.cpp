@@ -50,7 +50,9 @@ jobs:
           fi
           for n in $names; do
             echo "::group::$n"
-            gh run download "$RUN_ID" -n "$n" -D pulled
+            # --repo is required: this workflow never checks out the source, so
+            # gh has no git context to infer the repository from.
+            gh run download "$RUN_ID" -n "$n" -D pulled --repo "$GITHUB_REPOSITORY"
             echo "::endgroup::"
           done
           ls -la pulled
