@@ -8,7 +8,7 @@
 [![CUDA 12.8](https://img.shields.io/badge/CUDA-12.8-76B900?style=flat-square&logo=nvidia&labelColor=gray)](https://developer.nvidia.com/cuda-toolkit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
-[Prebuilt binaries](#prebuilt-binaries) • [Quick start](#quick-start) • [Voice cloning](#voice-cloning) • [Building](#building-from-source) • [GPU support](#gpu-support)
+[Prebuilt binaries](#prebuilt-binaries) • [Models](#models) • [Quick start](#quick-start) • [Voice cloning](#voice-cloning) • [Building](#building-from-source) • [GPU support](#gpu-support)
 
 </div>
 
@@ -59,13 +59,43 @@ see as `exit code -1073741515`.
 Linux builds do not bundle the CUDA runtime, because Colab and Kaggle images
 already provide it.
 
-Models are not included. Get them from
-[Serveurperso/OmniVoice-GGUF](https://huggingface.co/Serveurperso/OmniVoice-GGUF):
+Weights are not in the artifacts. See [Models](#models).
+
+## Models
+
+Pre-converted GGUFs live at
+[`Serveurperso/OmniVoice-GGUF`](https://huggingface.co/Serveurperso/OmniVoice-GGUF).
+You need two files: a **base** (the LLM) and a **tokenizer** (the audio codec).
+
+| File | Size | Notes |
+|---|---|---|
+| [`omnivoice-base-Q8_0.gguf`](https://huggingface.co/Serveurperso/OmniVoice-GGUF/resolve/main/omnivoice-base-Q8_0.gguf) | 626 MB | **Recommended.** Verified working; good quality at 4 GB VRAM |
+| [`omnivoice-base-Q4_K_M.gguf`](https://huggingface.co/Serveurperso/OmniVoice-GGUF/resolve/main/omnivoice-base-Q4_K_M.gguf) | 389 MB | Smaller, for tight VRAM |
+| [`omnivoice-base-BF16.gguf`](https://huggingface.co/Serveurperso/OmniVoice-GGUF/resolve/main/omnivoice-base-BF16.gguf) | 1174 MB | Reference precision |
+| [`omnivoice-base-F32.gguf`](https://huggingface.co/Serveurperso/OmniVoice-GGUF/resolve/main/omnivoice-base-F32.gguf) | 2342 MB | Unquantised |
+| [`omnivoice-tokenizer-Q8_0.gguf`](https://huggingface.co/Serveurperso/OmniVoice-GGUF/resolve/main/omnivoice-tokenizer-Q8_0.gguf) | 276 MB | **Recommended** |
+| [`omnivoice-tokenizer-Q4_K_M.gguf`](https://huggingface.co/Serveurperso/OmniVoice-GGUF/resolve/main/omnivoice-tokenizer-Q4_K_M.gguf) | 241 MB | Smaller |
+| [`omnivoice-tokenizer-F32.gguf`](https://huggingface.co/Serveurperso/OmniVoice-GGUF/resolve/main/omnivoice-tokenizer-F32.gguf) | 700 MB | Native dtype, what `quantize.sh` preserves |
+| [`omnivoice-tokenizer-BF16.gguf`](https://huggingface.co/Serveurperso/OmniVoice-GGUF/resolve/main/omnivoice-tokenizer-BF16.gguf) | 356 MB | — |
 
 ```bash
 huggingface-cli download Serveurperso/OmniVoice-GGUF \
   omnivoice-base-Q8_0.gguf omnivoice-tokenizer-Q8_0.gguf --local-dir models
 ```
+
+Or fetch one file directly:
+
+```bash
+curl -L -C - -o models/omnivoice-base-Q8_0.gguf \
+  https://huggingface.co/Serveurperso/OmniVoice-GGUF/resolve/main/omnivoice-base-Q8_0.gguf
+```
+
+> [!NOTE]
+> `-C -` matters. These files are 200 MB to 2.3 GB, and without it a dropped
+> connection restarts the whole download.
+
+To convert from the original checkpoint instead, use `checkpoints.sh` (fetch
+`k2-fsa/OmniVoice`), then `convert.py` and `quantize.sh`.
 
 ## Quick start
 
